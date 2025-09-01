@@ -1,0 +1,763 @@
+openapi: 3.1.0
+info:
+  title: LeagueLogic Mobile API
+  version: "1.0.0"
+  description: |
+    LeagueLogic Mobile API (v1) — FINAL.
+    - Enforces T-240 execution window (AEST authoritative server clock).
+    - Supports LIVE DATA FEED parsing, execution with SHA-3 lock, report vault, audits, analytics, investor exports.
+    - Roles: exec, analyst, investor, public.
+
+servers:
+  - url: https://api.leaguelogic.app/api/v1
+    description: Production
+  - url: https://staging.leaguelogic.app/api/v1
+    description: Staging
+
+security:
+  - BearerAuth: []
+
+tags:
+  - name: Auth
+  - name: Fixtures
+  - name: Validator
+  - name: Live Data Feed
+  - name: Execution
+  - name: Reports
+  - name: Audit
+  - name: Analytics
+  - name: Notifications
+  - name: Admin
+
+paths:
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Login and receive JWT
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '401':
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /fixtures/next:
+    get:
+      tags: [Fixtures]
+      summary: Get next unplayed fixture (⬜)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Fixture'
+        '404':
+          description: No upcoming fixtures
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /fixtures:
+    get:
+      tags: [Fixtures]
+      summary: List fixtures
+      parameters:
+        - in: query
+          name: round
+          schema: { type: integer }
+        - in: query
+          name: status
+          schema: { type: string, enum: [unplayed, played] }
+        - in: query
+          name: page
+          schema: { type: integer, minimum: 1, default: 1 }
+        - in: query
+          name: page_size
+          schema: { type: integer, minimum: 1, maximum: 200, default: 20 }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Fixture' }
+                  page: { type: integer }
+                  page_size: { type: integer }
+                  total: { type: integer }
+
+  /fixtures/{id}:
+    get:
+      tags: [Fixtures]
+      summary: Get fixture by ID
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Fixture' }
+        '404':
+          description: Not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  /validator/{fixture_id}:
+    get:
+      tags: [Validator]
+      summary: Compute T-minus and eligibility (T-240 rules)
+      parameters:
+        - in: path
+          name: fixture_id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: VALID or DISQUALIFIED with context
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidatorResponse'
+        '409':
+          description: Outside allowed window
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidatorError'
+
+  /live-data/{fixture_id}/parse:
+    post:
+      tags: [Live Data Feed]
+      summary: Paste & parse raw text from trusted sources
+      parameters:
+        - in: path
+          name: fixture_id
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LiveDataParseRequest'
+      responses:
+        '200':
+          description: Parsed fields with confidence
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LiveDataParseResponse'
+        '400':
+          description: Could not parse
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /live-data/{fixture_id}:
+    put:
+      tags: [Live Data Feed]
+      summary: Create/Update structured LIVE DATA FEED (manual overrides allowed)
+      parameters:
+        - in: path
+          name: fixture_id
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LiveDataFeed'
+      responses:
+        '200':
+          description: Ready status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LiveDataReadyResponse'
+        '422':
+          description: Missing required fields
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LiveDataReadyResponse'
+
+  /execute/{fixture_id}:
+    post:
+      tags: [Execution]
+      summary: Execute PRIME INTELLIGENCE REPORT (AUTO_EXECUTE, no clarifications)
+      description: Server re-checks T-240 validator and LIVE DATA readiness before execution.
+      parameters:
+        - in: path
+          name: fixture_id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Execution metadata and report links
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExecutionResponse'
+        '409':
+          description: Validation failed (outside T-240 or incomplete feed)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Forbidden (role)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /reports/{execution_id}:
+    get:
+      tags: [Reports]
+      summary: Get report metadata & signed URLs
+      parameters:
+        - in: path
+          name: execution_id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReportResponse'
+        '404':
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /reports:
+    get:
+      tags: [Reports]
+      summary: List reports with filters
+      parameters:
+        - in: query
+          name: team
+          schema: { type: string }
+        - in: query
+          name: round
+          schema: { type: integer }
+        - in: query
+          name: page
+          schema: { type: integer, default: 1 }
+        - in: query
+          name: page_size
+          schema: { type: integer, default: 20 }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/ReportListItem' }
+                  page: { type: integer }
+                  page_size: { type: integer }
+                  total: { type: integer }
+
+  /audit/{fixture_id}/parse:
+    post:
+      tags: [Audit]
+      summary: Paste & parse final result text (post-match)
+      parameters:
+        - in: path
+          name: fixture_id
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuditParseRequest'
+      responses:
+        '200':
+          description: Parsed final result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditParseResponse'
+        '400':
+          description: Could not parse
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /audit/{fixture_id}:
+    put:
+      tags: [Audit]
+      summary: Save audit; compute correctness; update fixture color
+      parameters:
+        - in: path
+          name: fixture_id
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuditRecord'
+      responses:
+        '200':
+          description: Audit saved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditResult'
+        '404':
+          description: Fixture/execution not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /analytics/summary:
+    get:
+      tags: [Analytics]
+      summary: Season or range summary
+      parameters:
+        - in: query
+          name: range
+          schema: { type: string, enum: [season, last_5, last_10] }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnalyticsSummary'
+
+  /analytics/team/{name}:
+    get:
+      tags: [Analytics]
+      summary: Per-team performance
+      parameters:
+        - in: path
+          name: name
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TeamAnalytics'
+
+  /analytics/venue/{venue_id}:
+    get:
+      tags: [Analytics]
+      summary: Venue insights & outcomes
+      parameters:
+        - in: path
+          name: venue_id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VenueAnalytics'
+
+  /analytics/conditions:
+    get:
+      tags: [Analytics]
+      summary: Condition summaries (e.g., weather)
+      parameters:
+        - in: query
+          name: type
+          schema: { type: string, enum: [weather] }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConditionAnalytics'
+
+  /notifications/test:
+    post:
+      tags: [Notifications]
+      summary: Send a test push (exec only)
+      responses:
+        '200':
+          description: Sent
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationTestResponse'
+        '403':
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /admin/logs:
+    get:
+      tags: [Admin]
+      summary: Immutable execution/audit trail (paginated)
+      parameters:
+        - in: query
+          name: fixture_id
+          schema: { type: string }
+        - in: query
+          name: page
+          schema: { type: integer, default: 1 }
+        - in: query
+          name: page_size
+          schema: { type: integer, default: 50 }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/AdminLogItem' }
+                  page: { type: integer }
+                  page_size: { type: integer }
+                  total: { type: integer }
+
+  /admin/version:
+    get:
+      tags: [Admin]
+      summary: Active engine tag & template hash
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminVersion'
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    # Auth
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string, format: email }
+        password: { type: string, minLength: 1 }
+    LoginResponse:
+      type: object
+      properties:
+        token: { type: string }
+        user:
+          type: object
+          properties:
+            id: { type: string }
+            name: { type: string }
+            role: { type: string, enum: [exec, analyst, investor, public] }
+
+    # Core domain
+    Fixture:
+      type: object
+      properties:
+        fixture_id: { type: string }
+        round: { type: integer }
+        date: { type: string, format: date }
+        teams: { type: string }
+        venue: { type: string }
+        kickoff_aest: { type: string, format: date-time }
+        status: { type: string, enum: [unplayed, played] }
+        color: { type: string, description: "🟩 win, 🟥 loss, ⬜ next unplayed" }
+
+    ValidatorResponse:
+      type: object
+      properties:
+        fixture_id: { type: string }
+        kickoff_aest: { type: string, format: date-time }
+        server_time_aest: { type: string, format: date-time }
+        t_minus_minutes: { type: integer }
+        state: { type: string, enum: [VALID, DISQUALIFIED] }
+        rules:
+          type: object
+          properties:
+            min_minutes: { type: integer, description: "0 means just before kickoff" }
+            max_minutes: { type: integer, description: "Always 240 for T-240" }
+    ValidatorError:
+      type: object
+      properties:
+        error:
+          $ref: '#/components/schemas/Error'
+        t_minus_minutes: { type: integer }
+        state: { type: string, enum: [VALID, DISQUALIFIED] }
+
+    LiveDataParseRequest:
+      type: object
+      required: [source, raw]
+      properties:
+        source: { type: string, enum: [nrl.com, zerotackle, espn, bom, other] }
+        raw: { type: string }
+    LiveDataParseResponse:
+      type: object
+      properties:
+        parsed:
+          $ref: '#/components/schemas/LiveDataFeed'
+        confidence: { type: number, minimum: 0, maximum: 1 }
+
+    LiveDataFeed:
+      type: object
+      properties:
+        referee: { type: string }
+        venue: { type: string }
+        weather: { type: string }
+        lineups:
+          type: object
+          properties:
+            home: { type: array, items: { type: string } }
+            away: { type: array, items: { type: string } }
+        injuries: { type: array, items: { type: string } }
+        odds:
+          type: object
+          properties:
+            home: { type: number }
+            away: { type: number }
+        form:
+          type: object
+          properties:
+            home_last5: { type: string }
+            away_last5: { type: string }
+        sentiment: { type: string }
+        sources:
+          type: array
+          items:
+            type: object
+            properties:
+              field: { type: string }
+              from: { type: string }
+              timestamp: { type: string, format: date-time }
+
+    LiveDataReadyResponse:
+      type: object
+      properties:
+        fixture_id: { type: string }
+        status: { type: string, enum: [READY, INCOMPLETE] }
+        missing_fields:
+          type: array
+          items: { type: string }
+
+    ExecutionResponse:
+      type: object
+      properties:
+        execution_id: { type: string }
+        fixture_id: { type: string }
+        executed_at_aest: { type: string, format: date-time }
+        t_minus_minutes: { type: integer }
+        status: { type: string, enum: [VALID] }
+        sha3_hash: { type: string }
+        version: { type: string, example: "V4.3-TCR-EAS/TCRX.CORE" }
+        report:
+          $ref: '#/components/schemas/ReportMeta'
+
+    ReportMeta:
+      type: object
+      properties:
+        docx_url: { type: string, format: uri }
+        pdf_url: { type: string, format: uri }
+        verdict:
+          type: object
+          properties:
+            winner: { type: string }
+            confidence: { type: integer, minimum: 0, maximum: 100 }
+            predicted_span: { type: string }
+
+    ReportResponse:
+      type: object
+      properties:
+        execution_id: { type: string }
+        fixture_id: { type: string }
+        docx_url: { type: string, format: uri }
+        pdf_url: { type: string, format: uri }
+        header:
+          type: object
+          properties:
+            logo: { type: string }
+            signature: { type: string }
+            timestamp_aest: { type: string, format: date-time }
+            sha3_hash: { type: string }
+
+    ReportListItem:
+      type: object
+      properties:
+        execution_id: { type: string }
+        fixture_id: { type: string }
+        team_home: { type: string }
+        team_away: { type: string }
+        round: { type: integer }
+        pdf_url: { type: string, format: uri }
+
+    AuditParseRequest:
+      type: object
+      required: [source, raw]
+      properties:
+        source: { type: string, enum: [nrl.com, espn, other] }
+        raw: { type: string }
+    AuditParseResponse:
+      type: object
+      properties:
+        actual_score: { type: string, example: "26-18" }
+        winner: { type: string }
+        notes: { type: string }
+
+    AuditRecord:
+      type: object
+      required: [execution_id, actual_score, winner]
+      properties:
+        execution_id: { type: string }
+        actual_score: { type: string }
+        winner: { type: string }
+        module_triggers:
+          type: object
+          properties:
+            PCFH: { type: boolean }
+            BRS: { type: boolean }
+            VCO: { type: boolean }
+        notes: { type: string }
+
+    AuditResult:
+      type: object
+      properties:
+        fixture_id: { type: string }
+        outcome: { type: string, enum: [WIN, LOSS, PUSH] }
+        color: { type: string, enum: ["🟩", "🟥", "⬜"] }
+        delta:
+          type: object
+          properties:
+            predicted_span: { type: string }
+            actual: { type: string }
+
+    AnalyticsSummary:
+      type: object
+      properties:
+        accuracy_pct: { type: number }
+        roi_trend:
+          type: array
+          items:
+            type: object
+            properties:
+              round: { type: integer }
+              roi: { type: number }
+        recalibrations_certified: { type: integer }
+        confidence_vs_outcome:
+          type: array
+          items:
+            type: object
+            properties:
+              confidence: { type: integer }
+              result: { type: string, enum: [WIN, LOSS, PUSH] }
+
+    TeamAnalytics:
+      type: object
+      properties:
+        team: { type: string }
+        accuracy_pct: { type: number }
+        games: { type: integer }
+        roi: { type: number }
+
+    VenueAnalytics:
+      type: object
+      properties:
+        venue_id: { type: string }
+        venue_name: { type: string }
+        accuracy_pct: { type: number }
+        clamp_range: { type: string }
+
+    ConditionAnalytics:
+      type: object
+      properties:
+        condition_type: { type: string, example: "weather" }
+        groups:
+          type: array
+          items:
+            type: object
+            properties:
+              key: { type: string, example: "Dry" }
+              accuracy_pct: { type: number }
+              games: { type: integer }
+
+    NotificationTestResponse:
+      type: object
+      properties:
+        status: { type: string, enum: [SENT] }
+        channels:
+          type: array
+          items: { type: string, example: "push" }
+
+    AdminLogItem:
+      type: object
+      properties:
+        ts: { type: string, format: date-time }
+        actor: { type: string }
+        action: { type: string, example: "EXECUTE" }
+        sha3: { type: string }
+
+    AdminVersion:
+      type: object
+      properties:
+        engine_version: { type: string, example: "V4.3-TCR-EAS/TCRX.CORE" }
+        template_sha: { type: string }
+
+    Error:
+      type: object
+      properties:
+        code: { type: string }
+        message: { type: string }
+        details: { type: object, additionalProperties: true }
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          $ref: '#/components/schemas/Error'
