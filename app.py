@@ -17,6 +17,13 @@ sheet = client.open_by_url("https://docs.google.com/spreadsheets/d/1YDkRSzh0pWVn
 worksheet = sheet.worksheet("Charts Helper")
 data = worksheet.get_all_records()
 df = pd.DataFrame(data)
+df["ROI per tip"] = pd.to_numeric(df["ROI per tip"], errors="coerce")
+if df["Confidence %"].dtype == object:
+    df["Confidence %"] = (
+        df["Confidence %"].str.rstrip("%")
+        .replace("", pd.NA)
+        .astype(float)
+    )
 
 # Layout — KPIs
 st.title("LEAGUELOGIC V2.1 — INVESTOR DASHBOARD")
