@@ -66,7 +66,11 @@ Goal: Public‑facing and partner‑grade site that showcases LeagueLogic V4.3�
 
 4.4 T‑minus Validator (Web App)
 •Input: kickoff datetime, venue.
-•Reads freeze and shows “Compliant by T‑30 / Non‑compliant”.
+•Search/data collection: T-240 through T-30 inclusive; execution timing: T-90 through T-30 inclusive.
+•T-33 is optimal, not mandatory. Timing compliance does not replace LIVE DATA readiness.
+•Use exact (kickoff − authoritative server time) minutes in Australia/Brisbane; never round for gating.
+•Reads freeze and shows execution eligibility plus the distinct search window; freeze after T-30.
+•See docs/TIMING_RULES.md for boundaries, sources, and API contract migration notes.
 •Visual: circular timer and timeline ruler.
 •Upload/report check: verify a report’s embedded timestamp and hash.
 

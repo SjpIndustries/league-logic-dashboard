@@ -1,10 +1,14 @@
 openapi: 3.1.0
 info:
   title: LeagueLogic Mobile API
-  version: "1.0.0"
+  version: "1.1.0"
   description: |
-    LeagueLogic Mobile API (v1) — FINAL.
-    - Enforces T-240 execution window (AEST authoritative server clock).
+    LeagueLogic Mobile API (v1) — timing contract revision.
+    - Search/data collection: T-240 through T-30 inclusive.
+    - Execution eligibility: T-90 through T-30 inclusive; T-33 is optimal, not mandatory.
+    - T-minus = (kickoff - authoritative server time) in exact minutes; never round for gating.
+    - AEST means Australia/Brisbane (UTC+10); timestamps include an explicit offset.
+    - This contract specifies intended behavior; deployment conformance is not established.
     - Supports LIVE DATA FEED parsing, execution with SHA-3 lock, report vault, audits, analytics, investor exports.
     - Roles: exec, analyst, investor, public.
 
@@ -128,7 +132,13 @@ paths:
   /validator/{fixture_id}:
     get:
       tags: [Validator]
-      summary: Compute T-minus and eligibility (T-240 rules)
+      summary: Compute execution eligibility (T-90 through T-30)
+      description: |
+        Evaluate execution timing using the authoritative server clock. Search opens
+        at T-240, but does not authorize execution before T-90. Both execution
+        boundaries are inclusive. T-33 is optimal, not required. Return a timing
+        snapshot (200, including DISQUALIFIED) or a timing rejection (409);
+        neither response executes a report. Re-check at execution time.
       parameters:
         - in: path
           name: fixture_id
@@ -136,13 +146,13 @@ paths:
           schema: { type: string }
       responses:
         '200':
-          description: VALID or DISQUALIFIED with context
+          description: Timing snapshot; VALID or DISQUALIFIED for execution
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ValidatorResponse'
         '409':
-          description: Outside allowed window
+          description: Execution timing rejected; outside T-90 through T-30 inclusive
           content:
             application/json:
               schema:
@@ -152,6 +162,10 @@ paths:
     post:
       tags: [Live Data Feed]
       summary: Paste & parse raw text from trusted sources
+      description: |
+        Pre-match data collection is permitted from T-240 through T-30 inclusive,
+        using the authoritative server clock. Reject outside this search window.
+        Parsing does not authorize report execution.
       parameters:
         - in: path
           name: fixture_id
@@ -176,11 +190,21 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Outside T-240 through T-30 inclusive search/data collection window
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /live-data/{fixture_id}:
     put:
       tags: [Live Data Feed]
       summary: Create/Update structured LIVE DATA FEED (manual overrides allowed)
+      description: |
+        Accept pre-match data updates only from T-240 through T-30 inclusive,
+        using the authoritative server clock. Freeze inputs after T-30.
+        Manual overrides do not bypass timing or execution readiness checks.
       parameters:
         - in: path
           name: fixture_id
@@ -205,12 +229,23 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/LiveDataReadyResponse'
+        '409':
+          description: Outside T-240 through T-30 inclusive search/data collection window
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /execute/{fixture_id}:
     post:
       tags: [Execution]
       summary: Execute PRIME INTELLIGENCE REPORT (AUTO_EXECUTE, no clarifications)
-      description: Server re-checks T-240 validator and LIVE DATA readiness before execution.
+      description: |
+        Server must re-check exact T-minus against the inclusive T-90 through T-30
+        execution window and LIVE DATA readiness immediately before execution.
+        T-240 opens search only. T-33 is optimal, not mandatory, and cannot bypass
+        readiness checks. Reject after T-30, including kickoff and post-kickoff.
+        A previous VALID validator response does not reserve execution eligibility.
       parameters:
         - in: path
           name: fixture_id
@@ -224,7 +259,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ExecutionResponse'
         '409':
-          description: Validation failed (outside T-240 or incomplete feed)
+          description: Validation failed (outside T-90 through T-30 inclusive or incomplete feed)
           content:
             application/json:
               schema:
@@ -513,26 +548,79 @@ components:
         status: { type: string, enum: [unplayed, played] }
         color: { type: string, description: "🟩 win, 🟥 loss, ⬜ next unplayed" }
 
+    TMinusMinutes:
+      type: number
+      description: |
+        Signed exact minutes from authoritative server time to kickoff, without
+        truncation or rounding. Positive before kickoff, zero at kickoff, negative
+        after kickoff. Display rounding must not determine eligibility.
+      examples: [240, 90, 33, 30, 29.99, 0, -1]
+
+    ExecutionTimingRules:
+      type: object
+      required: [min_minutes, max_minutes, optimal_minutes]
+      properties:
+        min_minutes: { type: integer, const: 30, description: "Inclusive execution cutoff (T-30)." }
+        max_minutes: { type: integer, const: 90, description: "Inclusive execution opening (T-90)." }
+        optimal_minutes: { type: integer, const: 33, description: "Preferred timing, not mandatory." }
+
+    SearchTimingRules:
+      type: object
+      required: [min_minutes, max_minutes]
+      properties:
+        min_minutes: { type: integer, const: 30, description: "Inclusive search cutoff (T-30)." }
+        max_minutes: { type: integer, const: 240, description: "Inclusive search opening (T-240)." }
+
+    ExecutionEligibility:
+      type: object
+      required: [t_minus_minutes, state, optimal]
+      properties:
+        t_minus_minutes: { $ref: '#/components/schemas/TMinusMinutes' }
+        state: { type: string, enum: [VALID, DISQUALIFIED], description: "Execution timing only; feed readiness is checked separately." }
+        optimal: { type: boolean, description: "True only at exact T-33; does not authorize execution by itself." }
+      allOf:
+        - if:
+            properties:
+              t_minus_minutes: { minimum: 30, maximum: 90 }
+          then:
+            properties:
+              state: { const: VALID }
+          else:
+            properties:
+              state: { const: DISQUALIFIED }
+        - if:
+            properties:
+              t_minus_minutes: { const: 33 }
+          then:
+            properties:
+              optimal: { const: true }
+          else:
+            properties:
+              optimal: { const: false }
+
     ValidatorResponse:
-      type: object
-      properties:
-        fixture_id: { type: string }
-        kickoff_aest: { type: string, format: date-time }
-        server_time_aest: { type: string, format: date-time }
-        t_minus_minutes: { type: integer }
-        state: { type: string, enum: [VALID, DISQUALIFIED] }
-        rules:
-          type: object
+      allOf:
+        - $ref: '#/components/schemas/ExecutionEligibility'
+        - type: object
+          required: [rules, search_rules]
           properties:
-            min_minutes: { type: integer, description: "0 means just before kickoff" }
-            max_minutes: { type: integer, description: "Always 240 for T-240" }
+            fixture_id: { type: string }
+            kickoff_aest: { type: string, format: date-time }
+            server_time_aest: { type: string, format: date-time }
+            rules:
+              $ref: '#/components/schemas/ExecutionTimingRules'
+            search_rules:
+              $ref: '#/components/schemas/SearchTimingRules'
+
     ValidatorError:
-      type: object
-      properties:
-        error:
-          $ref: '#/components/schemas/Error'
-        t_minus_minutes: { type: integer }
-        state: { type: string, enum: [VALID, DISQUALIFIED] }
+      allOf:
+        - $ref: '#/components/schemas/ExecutionEligibility'
+        - type: object
+          required: [error]
+          properties:
+            error:
+              $ref: '#/components/schemas/Error'
+            state: { const: DISQUALIFIED }
 
     LiveDataParseRequest:
       type: object
@@ -590,11 +678,16 @@ components:
 
     ExecutionResponse:
       type: object
+      required: [t_minus_minutes, status]
       properties:
         execution_id: { type: string }
         fixture_id: { type: string }
         executed_at_aest: { type: string, format: date-time }
-        t_minus_minutes: { type: integer }
+        t_minus_minutes:
+          allOf:
+            - $ref: '#/components/schemas/TMinusMinutes'
+            - minimum: 30
+              maximum: 90
         status: { type: string, enum: [VALID] }
         sha3_hash: { type: string }
         version: { type: string, example: "V4.3-TCR-EAS/TCRX.CORE" }
